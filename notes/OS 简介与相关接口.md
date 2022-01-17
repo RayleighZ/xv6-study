@@ -74,7 +74,7 @@ main(void) {
     // 读取并且执行输入的指令
     while (getcmd(buf, sizeof(buf)) >= 0) {
         
-        //貌似是在单独处理cd 指令
+        //在单独处理cd 指令，原因参考文件系统部分
         if (buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
             // Chdir must be called by the parent, not the child.
             buf[strlen(buf) - 1] = 0;  // chop \n
@@ -304,4 +304,148 @@ break;
 
 我不太确定上述代码是如何保证代码执行的顺序性的，不过猜测应该是右侧代码在没有输入时不会执行
 
-当然，在右侧runcmd的时候，这里的cmd依旧可以是一个pcmd（含管道符的cmd）
+当然，在右侧runcmd的时候，这里的cmd依旧可以是一个pcmd（含管道符的cmdcd）
+
+
+
+`The right end of the pipeline may be a command that itself includes a pipe (e.g., a | b | c), which itself forks two new child
+processes (one for b and one for c). `
+
+
+
+这样的话将会形成一个二叉树，其结构大致如下
+
+
+
+`Thus, the shell may create a tree of processes. The leaves of this tree are commands and the interior nodes are processes that wait until the left and right children complete.`
+
+> 二叉树的叶子为一条一条的指令（或许我应该说：不含管道符的指令），而内部节点为一个又一个的进程，这个进程在等待其左右子节点完成工作，其左右子节点可以是不含管道符的指令，也可以是进一步划分出的process。
+
+因为这棵树是右划分的，所以说任何一个节点的左子树都是一条单指令。
+
+其实这里有一个很有趣的问题，为什么这种划分是pipeline以右的，而不是以左？the book给出的结论是这样显然会增加复杂度
+
+
+
+`In principle, one could have the interior nodes run the left end of a pipeline, but doing so correctly would complicate the implementation.`
+
+
+
+个人认为这里的原因是，左划分和管道自左向右执行的逻辑相悖，如果是左划分，二叉树的每一个节点都将有一个巨大的左子树，而第一个需要执行的指令显然在最左侧，寻找这条指令的过程显然会比右划分得到的二叉树复杂的多。
+
+## 文件系统
+
+### Device File
+
+Linux万物皆文件，就算是与硬件设备的交互，在系统中也是通过file实现的，与常规的文件不同，这种文件称为`device file`，使用mknod指令可以创建device file，具体使用如下
+
+```c
+mknod("/console", 1, 1);
+```
+
+`Associated with a device file are the major and minor device numbers (the two arguments to mknod), which uniquely identify a kernel device.`
+
+> Linux下的device file相关：
+>
+> 参考文章：[Linux Kernel Study : Device File](https://linux-kernel-labs.github.io/refs/heads/master/labs/device_drivers.html)
+>
+> 首先，应该冷静的认识到，用file表示硬件设备显然只是一种抽象，对device file的访问将会被os重定向到对应的硬件设备
+>
+> These files are grouped into the /dev directory, and system calls `open`, `read`, `write`, `close`, `lseek`, `mmap` etc. are redirected by the operating system to the device driver associated with the physical device
+>
+> UNIX like的OS中，device file分为两种，Character device file & Block device file，Linux Kernel的文档中，二者的区别如下：
+>
+> This division is done by the speed, volume and way of organizing the data to be transferred from the device to the system and vice versa
+>
+> 细🔒的话
+>
+> * Character Device File：速度慢，控制少量的数据，并且I/O数据很少涉及到随机寻址，Examples are devices such as keyboard, mouse, serial ports, sound card, joystick. 一般与它们的交互就是一个byte接着一个byte。
+> * Block Device File：数据成块，体积大，其中经常发生寻址操作（原文中此处是search is common），Examples of devices that fall into this category are hard drives, cdroms, ram disks, magnetic tape drives. 这些device file的读写一般是数据块级别，而非byte by byte
+>
+> Linux为两种不同类型的文件提供了不同的Api。
+>
+> 在UNIX中，Device File通过两个固定的数字（Major & Minor）进行区分，Linux继承了这个传统，但是这两个数字变得可变了，Major用来区分Device类型，eg: Disk, serial ...，Minor用于区分具体的设备，也就是在大类下的具体设备区分。
+
+fstat函数可以找到文件标识符所包含的文件信息，具体的信息就是struct stat，具体的结构体代码如下
+
+```c
+#define T_DIR     1   // Directory
+#define T_FILE    2   // File
+#define T_DEVICE  3   // Device
+
+struct stat {
+  int dev;     // File system's disk device
+  uint ino;    // Inode number
+  short type;  // Type of file
+  short nlink; // Number of links to file
+  uint64 size; // Size of file in bytes
+};
+```
+
+### inode
+
+在the book中并没有对inode做出详细介绍，这里 的内容是参考[Linux Kernel Study : File System 2](https://linux-kernel-labs.github.io/refs/heads/master/labs/filesystems_part2.html)而来，面向的是Linux，在xv6中不一定具备以下性质。
+
+LKS FS2中对inode的介绍如下
+
+An inode uniquely identifies a file on disk and holds information about it (uid, gid, access rights, access times, pointers to data blocks, etc.). An important aspect is that an inode does not have information about the file name (it is retained by the associated `struct dentry` structure).
+
+大致翻译如下：inode是metadata（元数据），包含着数据的数据，也就是数据在disk上的唯一标识，访问权限等等。（值得注意的是，inode中并没有缓存文件的名称）
+
+文件与文件标识符是两个概念，之前的知识告诉我们，同一个文件可以被open多次（文件被open的标志就是有process中的文件标识符对应之），每被open一次，就会产生一个struct  file，这个struct file将会和inode对应，也就是说inode可以与多个（zero or more）struct file建立联系（毕竟一个inode可以被多个进程open多次）
+
+### link
+
+当某一个文件在不同路径下均需要被使用时，并不需要在每一个路径下均复制一份，可以通过link建立一个此文件的同步链接，供在不同路径下使用此文件，文件本身与文件的link可以拥有不同的名字。
+
+`Each inode is identified by a unique inode number. After the code sequence above, it is possible to determine that a and b refer to the same underlying contents by inspecting the result of fstat: both will return the same inode number (ino), and the nlink count will be set to 2`
+
+上面是说：通过link形成的文件将会指向同一个file唯一标识，也就是ino，这个ino的link数量（nlink）将会变为2，值得关注的是，就算不通过link指令建立链接，单纯的通过open建立一个文件同样也会产生link，`open("a", O_CREATE|O_WRONLY);`也会产生一个名为a的link。
+
+当一个inode的nlink归零，并且尚未有程序在使用它，将会被清除，下面这行代码可以生成一个无名的inode，并且此inode将会在程序终结之后被回收
+
+```c
+fd = open("/tmp/xyz", O_CREATE|O_RDWR);
+unlink("/tmp/xyz");
+```
+
+值得注意的是，inode的link（或者说名字）并不是使用inode的唯一方法，比如上述代码中，fd就是在unlink之后使用此inode的路径
+
+还有一个很有趣的事情，cd指令是少数几个shell不fork之后执行的指令，原因在于cd需要修改shell进程自身的文件路径，如果fork之后执行，显然就无法达到更改shell自身路径的初衷。
+
+```c
+// Read and run input commands.
+// 读取并且执行输入的指令
+while (getcmd(buf, sizeof(buf)) >= 0) {
+
+    //单独处理cd 指令
+    if (buf[0] == 'c' && buf[1] == 'd' && buf[2] == ' ') {
+        // Chdir must be called by the parent, not the child.
+        buf[strlen(buf) - 1] = 0;  // chop \n
+        if (chdir(buf + 3) < 0)
+            fprintf(2, "cannot cd %s\n", buf + 3);
+        continue;
+    }
+}
+exit(0);
+```
+
+> Linux的link
+>
+> 参考文章：[Linux Kernel Study : File System 2 ](https://linux-kernel-labs.github.io/refs/heads/master/labs/filesystems_part2.html) [Linux硬链接和软连接的区别与总结 - Hsia的博客 ](https://xzchsia.github.io/2020/03/05/linux-hard-soft-link/)
+>
+> 如果link和源文件的inode相同，则为硬链接，具有以下性质
+>
+> - 删除硬链接文件或者删除源文件任意之一，文件实体并未被删除，只有删除了源文件和所有对应的硬链接文件，文件实体才会被删除，可以通过给文件设置硬链接文件来防止重要文件被误删；
+> - 硬链接文件是普通文件，可以用rm删除；
+> - 对于静态文件（没有进程正在调用），当硬链接数为0时文件就被删除。注意：如果有进程正在调用，则无法删除或者即使文件名被删除但空间不会释放。
+>
+> 如上文所诉，值得注意的是，文件就算不适用ln指令建立link，也会自然的具有一个link
+>
+> 如果link和源文件的inode不相同，是通过block记录了源文件位置，之后重定向过去的，则为软连接，具有以下性质
+>
+> - 软链接类似windows系统的快捷方式；软链接里面存放的是源文件的路径，指向源文件；
+> - 删除源文件，软链接依然存在，但无法访问源文件内容；
+> - 软链接和源文件是不同的文件，**文件类型也不同**，inode号也不同；
+> - 软链接的文件类型是“l”，可以用rm删除。
+
