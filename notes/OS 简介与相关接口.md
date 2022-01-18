@@ -432,7 +432,7 @@ exit(0);
 
 > Linux的link
 >
-> 参考文章：[Linux Kernel Study : File System 2 ](https://linux-kernel-labs.github.io/refs/heads/master/labs/filesystems_part2.html) [Linux硬链接和软连接的区别与总结 - Hsia的博客 ](https://xzchsia.github.io/2020/03/05/linux-hard-soft-link/)
+> 参考文章：[Linux Kernel Study : File System 2  ](https://linux-kernel-labs.github.io/refs/heads/master/labs/filesystems_part2.html)  [Linux硬链接和软连接的区别与总结 - Hsia的博客 ](https://xzchsia.github.io/2020/03/05/linux-hard-soft-link/)
 >
 > 如果link和源文件的inode相同，则为硬链接，具有以下性质
 >
