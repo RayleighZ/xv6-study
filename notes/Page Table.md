@@ -228,3 +228,168 @@ pte_t *pte = &pagetable[PX(level, va)];
 
 内核在运行时会分配和释放很多物理内存，xv6将一部分的物理内存，从kernel data结束开始，到PHYSTOP为止，这一部分称为free memory，用于运行时的内存分配。每次分配和回收都**以页为单位**，一页大小4KB，通过一个**空闲物理帧链表free-list**，将空闲的物理帧串起来保存。页表、用户内存、内核栈、管道缓冲区等操作系统组件需要内存时，内核就从free-list上摘下一页或者多页分配给它们；在回收已经分配出去的内存时，这些被回收的物理帧，内核将它们一页页地重新挂到free-list上。
 
+## Process address space
+
+> 参考：[Chapter 3: Page Tables](https://zhuanlan.zhihu.com/p/351646541)
+
+每一个进程都有独立的页表，当xv6切换执行不同的程序时，也会切换satp指向的页表，一个子进程的内存空间地址在0~MAXVA之间，这大概是256GB的内存空间（当然这是虚拟内存空间，实际上这256GB的空间并没有被分配出来，只有当进程尝试使用时才会真正分配，这也是分页内存的优美之处）大部分的PTEs处于PTE_V状态，尚未被加载。
+
+每一个内存拥有单独的VM的好处如下
+
+* 每一个内存的VA将会被映射到不同的PA上，也就是说每个进程的PA是private的，这样就可以实现进程间的内存隔离
+* 每一个进程都认为自己将拥有连续的内存空间地址，但是实际上其物理地址很有可能是不连续的
+* 通过页表，OS可以将trampoline映射到VA的最顶端，保证所有的进程都可以看得见。
+
+下图是更为详细的process address分布。让我们关注stack部分
+
+<img src="https://github.com/RayleighZ/ImageBed/blob/master/user-process-address-space.png?raw=true" style="zoom: 33%;" /> 
+
+最上面的是：各命令行参数的字符串，指向各命令行参数的指针数组argv[ ]，用于从调用`main(argc, argv[ ])`返回的其它参数（argc、argv指针和伪造的返回pc值）。在初始用户栈的内容被设置好之后，用户程序就返回并开始执行main函数。当然这只是用户进程的stack的一部分，随着main函数的执行以及其他函数的调用，会有更多的变量或者栈帧加入其中。
+
+为了监控用户stack的overflow，xv6在stack下面安放了guard page，如果溢出，则会触发page-fault，现代OS可能会在overflow之后自动为stack补充内存。
+
+## code: sbrk
+
+sbrk是帮助进程减少或者增长内存的系统调用，具体的功能实现在`growproc`函数中，下分析其源码
+
+```c
+uint64
+sys_sbrk(void)
+{
+  int addr;
+  int n;
+
+  if(argint(0, &n) < 0)
+    return -1;
+  addr = myproc()->sz;
+  if(growproc(n) < 0)
+    return -1;
+  return addr;
+}
+```
+
+代行者是growproc，代码如下
+
+```c
+// Grow or shrink user memory by n bytes.
+// Return 0 on success, -1 on failure.
+int
+growproc(int n)
+{
+  uint sz;
+  struct proc *p = myproc();
+
+  //这里的sz是process使用的va的大小
+  //看上去指向的是空闲的heap
+  sz = p->sz;
+  //根据n的正负判断是削减内存还是增加内存
+  if(n > 0){
+    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+  } else if(n < 0){
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
+  }
+  p->sz = sz;
+  return 0;
+}
+```
+
+增加内存的代码如下
+
+```c
+// Allocate PTEs and physical memory to grow process from oldsz to
+// newsz, which need not be page aligned.  Returns new size or 0 on error.
+uint64
+uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  char *mem;
+  uint64 a;
+
+  if(newsz < oldsz)
+    return oldsz;
+  //PGROUNDUP是计算地址按照pagesize的整数倍向上取整的结果
+  oldsz = PGROUNDUP(oldsz);
+  for(a = oldsz; a < newsz; a += PGSIZE){
+    //分配新的内存
+    mem = kalloc();
+    if(mem == 0){
+      //如果分配失败，就删掉刚刚增加的page并返回
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
+    //如果分配成功，就手动将page置零，之后再map进去
+    memset(mem, 0, PGSIZE);
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      //如果map失败，就删page，free物理内存之后run
+      kfree(mem);
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
+  }
+  return newsz;
+}
+```
+
+删除内存的代码如下
+
+```c
+// Deallocate user pages to bring the process size from oldsz to
+// newsz.  oldsz and newsz need not be page-aligned, nor does newsz
+// need to be less than oldsz.  oldsz can be larger than the actual
+// process size.  Returns the new process size.
+uint64
+uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+  }
+
+  return newsz;
+}
+```
+
+可以看到真正的执行者是uvmunmap函数，其代码如下
+
+```c
+// Remove npages of mappings starting from va. va must be
+// page-aligned. The mappings must exist.
+// Optionally free the physical memory.
+void
+uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
+{
+  uint64 a;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("uvmunmap: not aligned");
+
+  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    //通过walk找到pte
+    if((pte = walk(pagetable, a, 0)) == 0)
+      panic("uvmunmap: walk");
+    if((*pte & PTE_V) == 0)
+      panic("uvmunmap: not mapped");
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("uvmunmap: not a leaf");
+    if(do_free){
+      //free PTE对应的物理内存地址
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+    }
+    //将PTE归零
+    *pte = 0;
+  }
+}
+```
+
+用户层的page table并不只告诉硬件这里的虚拟内存对应的物理内存地址，同样也记录了那一块物理内存被分配给了这个进程。所以再free内存的时候需要此PTE是否有效/存在。
+
+xv6 uses a process’s page table not just to tell the hardware how to map user virtual addresses, but also as the only record of which physical memory pages are allocated to that process. That is the reason why freeing user memory (in uvmunmap) requires examination of the user page table.
+
+## code: exec
+
