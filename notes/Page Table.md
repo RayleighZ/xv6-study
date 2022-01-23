@@ -71,7 +71,9 @@ MMU（Memory Management Unit，内存管理单元），主要作用是将虚拟�
 
 TLB（Translation Lookaside Buffer，俗称快表），其存在目的是加快内存访问（也许有点像CPU的三缓），主要存储的是最近的使用的页表，减少页表查询操作，如果一个需要访问内存中的一个数据，给定这个数据的虚拟地址，查询TLB，发现有（hit），直接得到物理地址，在内存根据物理地址取数据。如果TLB没有这个虚拟地址（miss），那么就只能费力的通过页表来查找了。
 
-如果地址空间发生了切换，TLB就需要被刷新，不然
+如果地址空间发生了切换，TLB就需要被刷新，不然可能会导致寻址错误。
+
+when xv6 changes a page table, it must tell the CPU to invalidate corresponding cached TLB entries. If it didn’t, then at some point later the TLB might use an old cached mapping, pointing to a physical page that in the meantime has been allocated to another process, and as a result, a process might be able to scribble on some other process’s memor
 
 ## Kernel address space
 
@@ -105,6 +107,7 @@ VA的启动位于main函数中，具体调用过程如下
 kinit();         // physical page allocator
 kvminit();       // create kernel page table
 kvminithart();   // turn on paging
+procinit();      // process table
 ```
 
 VA的起点来自kvminit函数，其代码如下
@@ -180,7 +183,11 @@ kvminithart()
 }
 ```
 
-接下来看一下walk函数，其功能是根据64bit VA寻找PTE，代码如下
+接下来看一下walk函数，其功能是根据64bit VA寻找PTE，代码如下，大致就是MMU的寻址逻辑，但是这里并不是通过异常函数来处理尚未分配的页表，而是直接在此函数中形成新的页表
+
+if the alloc argument is set, walk allocates a new page-table page and puts its physical address in the PTE. It returns the address of the PTE in the lowest layer in the tree
+
+为什么walk函数申请了新的内存之后不需要刷新TLB cache？刷新TLB的契机应该是改变了已有的pagetable，walk中做出的修改属于增加TLB的范畴，就算不刷新也不会造成寻址错误
 
 ```c
 pte_t *
@@ -195,8 +202,10 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
+      //当页表并未被创建时，创建页表
       if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
         return 0;
+      //页表初始化，清零
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
     }
@@ -204,4 +213,18 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
   return &pagetable[PX(0, va)];
 }
 ```
+
+上面这些代码都必须建立在Kernel Space是直接映射的前提下，比如walk函数中的这一行
+
+```c
+pte_t *pte = &pagetable[PX(level, va)];
+```
+
+也就是walk函数不断向下一等级寻址的过程，是直接将pa拿出来赋值给va，这样就要求直接映射
+
+之后main函数将调用`procinit()`，其中有一个目的就是将每一个proc的kernel stack映射到虚拟内存加载时分配的kernel space中
+
+> 目前看源码的主要疑惑是：好像很多场景下需要刷新TLB，但是OS没有刷新TLB，貌似用户层的刷新位于trampoline中，后续会看到。and in the trampoline code that switches to a user page table before returning to user space (kernel/trampoline.S:79). 如果每次switch的时候都会刷新一次TLB，应该可以解决我的心头之惑
+
+内核在运行时会分配和释放很多物理内存，xv6将一部分的物理内存，从kernel data结束开始，到PHYSTOP为止，这一部分称为free memory，用于运行时的内存分配。每次分配和回收都**以页为单位**，一页大小4KB，通过一个**空闲物理帧链表free-list**，将空闲的物理帧串起来保存。页表、用户内存、内核栈、管道缓冲区等操作系统组件需要内存时，内核就从free-list上摘下一页或者多页分配给它们；在回收已经分配出去的内存时，这些被回收的物理帧，内核将它们一页页地重新挂到free-list上。
 
