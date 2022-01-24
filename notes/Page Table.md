@@ -393,3 +393,33 @@ xv6 uses a process’s page table not just to tell the hardware how to map user 
 
 ## code: exec
 
+exec是一个system call，负责将指定路径下的指定格式文件（xv6中为ELF文件）加载进内存中，下面简单分析一下源码调用过程
+
+首先exec将会校验ELF文件格式是否正确，代码如下
+
+```c
+// Check ELF header
+if(readi(ip, 0, (uint64)&elf, 0, sizeof(elf)) != sizeof(elf))
+goto bad;
+if(elf.magic != ELF_MAGIC)
+goto bad;
+```
+
+exec会尝试根据elf文件格式读取elf，之后读取ELF head，并校验其是否等于ELF MAGIC，其中，ELF MAGIC是类似于JAVA类加载机制中校验部分的JAVA魔数（0xCAFEBABE），就向JAVA魔数用于鉴定某一个文件是否是class文件一样，xv6在这里通过ELF 魔数（宏定义为0x464C457FU，也就是0x7FELF的小端改写）来验证某一个文件是否是ELF文件，如果文件头是ELF MAGIC，xv6则认定其为ELF文件。
+
+> 继续上次的ELF文件解析
+>
+> 参考文章：[ELF文件解析（一）：Segment和Section - JollyWing](https://www.cnblogs.com/jiqingwu/p/elf_format_research_01.html)
+>
+> 下图描述了ELF文件的大体格式
+>
+> ![](https://img2018.cnblogs.com/blog/417313/201810/417313-20181012154909093-954664315.png) 
+>
+> 左侧为链接视图，可以理解为ELF文件的目标代码文件布局，右边是执行视图，可以理解为可执行文件的内容视图，值得注意的是代码
+
+在通过了ELF校验之后，xv6将试图为这个ELF文件分配内存，代码如下
+
+```c
+
+```
+

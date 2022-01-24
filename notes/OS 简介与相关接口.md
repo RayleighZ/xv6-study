@@ -41,7 +41,13 @@ exec作用是将特定的程序内存image替换掉当前的process内存。其�
 > * 可重定位目标文件：包含二进制代码与数据，由汇编器产生，多个可重定位目标文件经过链接器之后形成可以被运行的可执行目标文件
 > * 可执行目标文件：包含二进制代码和数据，可以被加载器直接执行。
 >
-> **To be continued =>**
+> ELF究竟是什么？它是Executable and Linkable Format，可执行且可链接文件，可执行代表着这个文件可以被加载器执行，具备功能效力，可链接代表可以被连接器链接，与动态库一起构成可执行文件，这里我理解的ELF就是可以进一步包装连接的可执行文件。
+>
+> 因为可以执行又可以链接，所以ELF文件格式提供了两种不同的视角，从汇编器和链接器的角度来看（也就是从代码的角度来看），ELF如下左图所示，是ELF header、section header table、以及一系列Section的集合，而从加载器的角度来看，它是由Program header table描述的一系列Segment的集合
+>
+> ![](https://img2018.cnblogs.com/blog/417313/201810/417313-20181012154909093-954664315.png)  <img src="https://img-blog.csdn.net/20170611205621669?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvZGFpZGUyMDEy/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" style="zoom:50%;" />
+>
+> 或者可以参考左图，在连接器看来，ELF文件包含的是一段一段的“代码”like的东西，比如已编译的机器代码，只读数据啥的。从程序执行的角度来看ELF，则是许多的只读代码段，读写数据段这些OS很容易加载进内存的东西。写汇编的时候，用.text .bss等表示的都是section。文件载入内存，是以segment为单位
 
 exec在执行完成进程之后并不会返回到调用exec的程序，貌似是会在ELF文件头指明的位置执行。（xv6书这里写的比较费解，就姑且理解成，exec会用ELF文件完全替换掉当前process的内容（当然在后面的章节中可以了解到，其实其中的**文件标识符**是没有被替换掉的）就将导致其返回值位置（理应写在stack中）也会被修改，最终导致process无法返回到主调位置）
 
