@@ -417,9 +417,17 @@ exec会尝试根据elf文件格式读取elf，之后读取ELF head，并校验�
 >
 > 左侧为链接视图，可以理解为ELF文件的目标代码文件布局，右边是执行视图，可以理解为可执行文件的内容视图，值得注意的是代码
 
-在通过了ELF校验之后，xv6将试图为这个ELF文件分配内存，代码如下
+在通过了ELF校验之后，xv6将试图为这个ELF文件分配内存，根据第一章的知识易知为ELF文件中的Segment段，这里使用的是loadseg方法，相关调用如下
 
 ```c
-
+if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
+    goto bad;
+sz = sz1;
+if((ph.vaddr % PGSIZE) != 0)
+    goto bad;
+if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
+    goto bad;
 ```
+
+首先通过uvmalloc为process address space扩容，之后校验是否内存对齐，最后通过loadseg将ELF文件中的内容加载进内存中
 
